@@ -118,9 +118,15 @@ FW_VERSIONS_EXT = {
     ],
   },
   CAR.HYUNDAI_BAYON_1ST_GEN_NON_SCC: {
-    # TODO: Check working route for more FW
     (Ecu.fwdCamera, 0x7c4, None): [
-      b'\xf1\x00BC3 LKA  AT EUR LHD 1.00 1.01 99211-Q0100 261'
+      b'\xf1\x00BC3 LKA  AT EUR LHD 1.00 1.01 99211-Q0100 261',
+      b'\xf1\x00BC3 LKA  AT EUR LHD 1.00 1.02 99211-Q0100 262',
+    ],
+    (Ecu.eps, 0x7d4, None): [
+      b'\xf1\x00BC3 MDPS C 1.00 1.05 56340-Q0100 1B26',
+    ],
+    (Ecu.combinationMeter, 0x7c6, None): [
+      b'\xf1\x000B1',
     ],
   },
 }
