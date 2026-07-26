@@ -9,7 +9,7 @@ import numpy as np
 from opendbc.car import DT_CTRL, structs
 from opendbc.car.can_definitions import CanData
 from opendbc.car.hyundai import hyundaican, hyundaicanfd
-from opendbc.car.hyundai.values import HyundaiFlags, Buttons, CANFD_CAR
+from opendbc.car.hyundai.values import HyundaiFlags, Buttons, CANFD_CAR, CAR
 from opendbc.sunnypilot.car.intelligent_cruise_button_management_interface_base import IntelligentCruiseButtonManagementInterfaceBase
 
 ButtonType = structs.CarState.ButtonEvent.Type
@@ -19,6 +19,7 @@ BUTTON_COPIES = 2
 BUTTON_COPIES_TIME = 7
 BUTTON_COPIES_TIME_IMPERIAL = [BUTTON_COPIES_TIME + 3, 70]
 BUTTON_COPIES_TIME_METRIC = [BUTTON_COPIES_TIME, 40]
+BAYON_CANCEL_SENTINEL = -1
 
 BUTTONS = {
   SendButtonState.increase: Buttons.RES_ACCEL,
@@ -37,7 +38,7 @@ class IntelligentCruiseButtonManagementInterface(IntelligentCruiseButtonManageme
 
     # send resume at a max freq of 10Hz
     if (self.frame - self.last_button_frame) * DT_CTRL > 0.1:
-      # send 25 messages at a time to increases the likelihood of resume being accepted
+      # Send repeated messages to increase the likelihood of the stock cruise accepting the button press.
       can_sends.extend([hyundaican.create_clu11(packer, self.frame, CS.clu11, send_button, self.CP)] * copies)
       if (self.frame - self.last_button_frame) * DT_CTRL >= 0.15:
         self.last_button_frame = self.frame
@@ -68,7 +69,10 @@ class IntelligentCruiseButtonManagementInterface(IntelligentCruiseButtonManageme
     self.last_button_frame = last_button_frame
 
     if self.ICBM.sendButton != SendButtonState.none:
-      send_button = BUTTONS[self.ICBM.sendButton]
+      bayon_cancel = (self.CP.carFingerprint == CAR.HYUNDAI_BAYON_1ST_GEN_NON_SCC and
+                      self.ICBM.sendButton == SendButtonState.decrease and
+                      self.ICBM.vTarget <= BAYON_CANCEL_SENTINEL)
+      send_button = Buttons.CANCEL if bayon_cancel else BUTTONS[self.ICBM.sendButton]
 
       if self.CP.carFingerprint in CANFD_CAR:
         can_sends.extend(self.create_canfd_mock_button_messages(packer, CS, CAN, send_button))
