@@ -21,6 +21,24 @@ BUTTON_COPIES_TIME_IMPERIAL = [BUTTON_COPIES_TIME + 3, 70]
 BUTTON_COPIES_TIME_METRIC = [BUTTON_COPIES_TIME, 40]
 BAYON_CANCEL_SENTINEL = -1
 
+# The Bayon ICE non-SCC CLU11 receiver rejects the generic frame % 16 counter
+# sequence. Build the frame from the latest stock CLU11 and send the next
+# expected AliveCnt1 value instead.
+BAYON_CLU11_FIELDS = (
+  "CF_Clu_CruiseSwState",
+  "CF_Clu_CruiseSwMain",
+  "CF_Clu_SldMainSW",
+  "CF_Clu_ParityBit1",
+  "CF_Clu_VanzDecimal",
+  "CF_Clu_Vanz",
+  "CF_Clu_SPEED_UNIT",
+  "CF_Clu_DetentOut",
+  "CF_Clu_RheostatLevel",
+  "CF_Clu_CluInfo",
+  "CF_Clu_AmpInfo",
+  "CF_Clu_AliveCnt1",
+)
+
 BUTTONS = {
   SendButtonState.increase: Buttons.RES_ACCEL,
   SendButtonState.decrease: Buttons.SET_DECEL,
@@ -30,8 +48,29 @@ BUTTONS = {
 class IntelligentCruiseButtonManagementInterface(IntelligentCruiseButtonManagementInterfaceBase):
   def __init__(self, CP, CP_SP):
     super().__init__(CP, CP_SP)
+    self.last_bayon_clu11_counter = None
+
+  def create_bayon_can_button_message(self, packer, CS, send_button) -> list[CanData]:
+    stock_counter = int(CS.clu11["CF_Clu_AliveCnt1"])
+
+    # card runs at 100 Hz while the stock CLU11 is approximately 50 Hz. Send
+    # only once for each newly observed stock counter instead of flooding the
+    # bus with duplicate or out-of-order counters.
+    if stock_counter == self.last_bayon_clu11_counter:
+      return []
+
+    self.last_bayon_clu11_counter = stock_counter
+    values = {signal: CS.clu11[signal] for signal in BAYON_CLU11_FIELDS}
+    values["CF_Clu_CruiseSwState"] = send_button
+    values["CF_Clu_AliveCnt1"] = (stock_counter + 1) % 0x10
+
+    self.last_button_frame = self.frame
+    return [packer.make_can_msg("CLU11", 0, values)]
 
   def create_can_mock_button_messages(self, packer, CS, send_button) -> list[CanData]:
+    if self.CP.carFingerprint == CAR.HYUNDAI_BAYON_1ST_GEN_NON_SCC:
+      return self.create_bayon_can_button_message(packer, CS, send_button)
+
     can_sends = []
     copies_xp = BUTTON_COPIES_TIME_METRIC if CS.is_metric else BUTTON_COPIES_TIME_IMPERIAL
     copies = int(np.interp(BUTTON_COPIES_TIME, copies_xp, [1, BUTTON_COPIES]))
