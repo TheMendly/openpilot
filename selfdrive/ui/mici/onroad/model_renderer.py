@@ -56,6 +56,7 @@ class ModelRenderer(Widget, ModelRendererSP):
     Widget.__init__(self)
     ModelRendererSP.__init__(self)
     self._longitudinal_control = False
+    self._icbm_available = False
     self._experimental_mode = False
     self._blend_filter = FirstOrderFilter(1.0, 0.25, 1 / gui_app.target_fps)
     self._prev_allow_throttle = True
@@ -128,10 +129,15 @@ class ModelRenderer(Widget, ModelRendererSP):
     if sm.updated['carParams']:
       self._longitudinal_control = sm['carParams'].openpilotLongitudinalControl
 
+    # Pseudo-ACC (ICBM) cars don't run openpilotLongitudinalControl but still have a
+    # valid vision lead — allow the chevron so the driver can see the detected lead.
+    self._icbm_available = bool(ui_state.CP_SP is not None and
+                                ui_state.CP_SP.intelligentCruiseButtonManagementAvailable)
+
     model = sm['modelV2']
     radar_state = sm['radarState'] if sm.valid['radarState'] else None
     lead_one = radar_state.leadOne if radar_state else None
-    render_lead_indicator = self._longitudinal_control and radar_state is not None
+    render_lead_indicator = (self._longitudinal_control or self._icbm_available) and radar_state is not None
 
     # Update model data when needed
     model_updated = sm.updated['modelV2']
@@ -153,8 +159,8 @@ class ModelRenderer(Widget, ModelRendererSP):
       self._draw_lane_lines()
       self._draw_path(sm)
 
-    # if render_lead_indicator and radar_state:
-    #   self._draw_lead_indicator()
+      if render_lead_indicator and radar_state:
+        self._draw_lead_indicator()
 
   def _update_raw_points(self, model):
     """Update raw 3D points from model data"""

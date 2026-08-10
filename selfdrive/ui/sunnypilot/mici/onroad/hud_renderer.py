@@ -28,7 +28,9 @@ class HudRendererSP(HudRenderer):
 
     sm = ui_state.sm
     plan_valid = sm.alive['longitudinalPlan'] and sm.valid['longitudinalPlan']
-    self._lead_active = plan_valid and sm['longitudinalPlan'].hasLead
+    # Pseudo-ACC only: don't clutter the HUD of cars that already show the chevron.
+    icbm_available = ui_state.CP_SP is not None and ui_state.CP_SP.intelligentCruiseButtonManagementAvailable
+    self._lead_active = plan_valid and icbm_available and sm['longitudinalPlan'].hasLead
     self._lead_distance = 0.0
     self._lead_relative_speed = 0.0
 
