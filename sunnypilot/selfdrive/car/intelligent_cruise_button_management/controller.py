@@ -4,9 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
-import cereal.messaging as messaging
-
-from cereal import car, custom
+from cereal import car, custom, log
 from opendbc.car import structs, apply_hysteresis
 from opendbc.car.hyundai.values import CAR
 from openpilot.common.constants import CV
@@ -19,15 +17,19 @@ State = custom.IntelligentCruiseButtonManagement.IntelligentCruiseButtonManageme
 SendButtonState = custom.IntelligentCruiseButtonManagement.SendButtonState
 
 ALLOWED_SPEED_THRESHOLD = 1.8  # m/s, ~4 MPH
-HYST_GAP = 0.0  # currently disabled; TODO-SP: might need to be brand-specific
+HYST_GAP = 1.0  # km/h- or mph-equivalent deadband on the set-speed target (kills SET-/RES+ chatter)
 INACTIVE_TIMER = 0.4
 
 # Bayon NON-SCC pseudo-ACC settings. The stock cruise remains responsible for
 # throttle control; ICBM only emulates RES+, SET- and, through a sentinel,
 # CANCEL. It never sends SCC acceleration or brake commands.
 BAYON_LEAD_MIN_SPEED = 35.0 * CV.KPH_TO_MS
-BAYON_LEAD_LOOKAHEAD_IDX = 16  # Model trajectory point at about 2.5 seconds
-BAYON_HARD_DECEL_CANCEL = -0.8  # m/s^2
+BAYON_LEAD_LOOKAHEAD_IDX = 13  # Model trajectory point at about 1.65 s (was 16 / ~2.5 s)
+# Hard-decel CANCEL uses a Schmitt trigger + debounce so routine lead slowdowns
+# stay on SET- (coast) instead of dropping cruise entirely.
+BAYON_HARD_DECEL_CANCEL = -1.6  # m/s^2, enter-cancel threshold (was -0.8)
+BAYON_DECEL_CANCEL_CLEAR = -0.9  # m/s^2, must recover above this to re-arm
+BAYON_CANCEL_DEBOUNCE_FRAMES = int(0.3 / DT_CTRL)  # sustained frames before latching cancel
 BAYON_CANCEL_SENTINEL = -1
 
 
@@ -58,37 +60,48 @@ class IntelligentCruiseButtonManagement:
 
     self.is_bayon_non_scc = self.CP.carFingerprint == CAR.HYUNDAI_BAYON_1ST_GEN_NON_SCC
     self.cancel_required = False
-    self.long_plan_sm = messaging.SubMaster(['longitudinalPlan']) if self.is_bayon_non_scc else None
+    self._cancel_latched = False
+    self._hard_decel_frames = 0
 
   @property
   def v_cruise_equal(self) -> bool:
     return self.v_target == self.v_cruise_cluster
 
-  def update_calculations(self, CS: car.CarState, LP_SP: custom.LongitudinalPlanSP) -> None:
+  def update_calculations(self, CS: car.CarState, LP_SP: custom.LongitudinalPlanSP,
+                          LP: log.LongitudinalPlan, plan_valid: bool) -> None:
     speed_conv = CV.MS_TO_KPH if self.is_metric else CV.MS_TO_MPH
     ms_conv = CV.KPH_TO_MS if self.is_metric else CV.MPH_TO_MS
 
     v_target_ms = LP_SP.vTarget
     self.cancel_required = False
 
-    if self.long_plan_sm is not None:
-      self.long_plan_sm.update(0)
-      plan_valid = self.long_plan_sm.alive['longitudinalPlan'] and self.long_plan_sm.valid['longitudinalPlan']
-
-      if plan_valid:
-        LP = self.long_plan_sm['longitudinalPlan']
+    if self.is_bayon_non_scc:
+      if plan_valid and LP is not None:
         lead_active = LP.hasLead and CS.vEgo >= BAYON_LEAD_MIN_SPEED
 
         if lead_active and len(LP.speeds):
           lookahead_idx = min(BAYON_LEAD_LOOKAHEAD_IDX, len(LP.speeds) - 1)
           v_target_ms = min(v_target_ms, LP.speeds[lookahead_idx])
 
-        self.cancel_required = bool(
-          LP.hasLead and (LP.shouldStop or LP.aTarget <= BAYON_HARD_DECEL_CANCEL)
-        )
-      elif CS.cruiseState.speedCluster > 0:
-        # A missing/stale plan must never cause an automatic RES+ command.
-        v_target_ms = min(v_target_ms, CS.cruiseState.speedCluster)
+        # Debounce the soft (aTarget) path so a single noisy MPC frame cannot
+        # drop cruise; shouldStop always cancels immediately.
+        if LP.aTarget <= BAYON_HARD_DECEL_CANCEL:
+          self._hard_decel_frames = min(self._hard_decel_frames + 1, BAYON_CANCEL_DEBOUNCE_FRAMES)
+        else:
+          self._hard_decel_frames = 0
+
+        if LP.shouldStop or self._hard_decel_frames >= BAYON_CANCEL_DEBOUNCE_FRAMES:
+          self._cancel_latched = True
+        elif not LP.hasLead or LP.aTarget > BAYON_DECEL_CANCEL_CLEAR:
+          self._cancel_latched = False
+
+        self.cancel_required = bool(LP.hasLead and self._cancel_latched)
+      else:
+        # A missing/stale plan must never cause an automatic RES+ or CANCEL.
+        self._hard_decel_frames = 0
+        self._cancel_latched = False
+        if CS.cruiseState.speedCluster > 0:
+          v_target_ms = min(v_target_ms, CS.cruiseState.speedCluster)
 
     self.v_target_ms_last = apply_hysteresis(v_target_ms, self.v_target_ms_last, HYST_GAP * ms_conv)
 
@@ -151,13 +164,14 @@ class IntelligentCruiseButtonManagement:
 
     self.is_ready = ready and not button_pressed
 
-  def run(self, CS: car.CarState, CC: car.CarControl, LP_SP: custom.LongitudinalPlanSP, is_metric: bool) -> None:
+  def run(self, CS: car.CarState, CC: car.CarControl, LP_SP: custom.LongitudinalPlanSP,
+          LP: log.LongitudinalPlan, plan_valid: bool, is_metric: bool) -> None:
     if self.CP_SP.pcmCruiseSpeed:
       return
 
     self.is_metric = is_metric
 
-    self.update_calculations(CS, LP_SP)
+    self.update_calculations(CS, LP_SP, LP, plan_valid)
     self.update_readiness(CS, CC)
 
     if self.is_bayon_non_scc and self.cancel_required and self.is_ready:
