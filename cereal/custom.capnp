@@ -29,6 +29,10 @@ struct IntelligentCruiseButtonManagement {
   state @0 :IntelligentCruiseButtonManagementState;
   sendButton @1 :SendButtonState;
   vTarget @2 :Float32;
+  cancel @3 :Bool;          # Pseudo-ACC gave up: send CANCEL and hand the car back
+  brakeRequired @4 :Bool;   # Coasting cannot shed the speed in time, the driver must brake
+  atSpeedFloor @5 :Bool;    # Target is below the lowest set speed the stock cruise can hold
+  vTargetSource @6 :VTargetSource;
 
   enum IntelligentCruiseButtonManagementState {
     inactive @0;      # No button press or default state
@@ -42,6 +46,12 @@ struct IntelligentCruiseButtonManagement {
     none @0;
     increase @1;
     decrease @2;
+  }
+
+  enum VTargetSource {
+    cruise @0;   # longitudinalPlanSP: driver set speed, speed limit or curve
+    plan @1;     # longitudinal plan trajectory
+    lead @2;     # pseudo-ACC follow law
   }
 }
 
@@ -342,6 +352,9 @@ struct OnroadEventSP @0xda96579883444c35 {
     speedLimitChanged @21;
     speedLimitPending @22;
     e2eChime @23;
+    pseudoAccSpeedFloor @24;
+    pseudoAccBrakeRequired @25;
+    pseudoAccTakeControl @26;
   }
 }
 
@@ -351,6 +364,7 @@ struct CarParamsSP @0x80ae746ee2596b11 {
   pcmCruiseSpeed @3 :Bool;
   intelligentCruiseButtonManagementAvailable @4 :Bool;
   enableGasInterceptor @5 :Bool;
+  pseudoAccAvailable @6 :Bool;
 
   neuralNetworkLateralControl @2 :NeuralNetworkLateralControl;
 

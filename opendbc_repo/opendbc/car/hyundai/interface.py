@@ -217,6 +217,10 @@ class CarInterface(CarInterfaceBase):
 
     ret.intelligentCruiseButtonManagementAvailable = not (stock_cp.flags & HyundaiFlags.CANFD_ALT_BUTTONS)
 
+    # Pseudo-ACC is only meaningful where sunnypilot has no longitudinal actuation of its own and the
+    # stock cruise can still be driven through ICBM buttons.
+    ret.pseudoAccAvailable = bool(ret.flags & HyundaiFlagsSP.NON_SCC) and ret.intelligentCruiseButtonManagementAvailable
+
     return ret
 
   @staticmethod

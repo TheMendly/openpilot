@@ -66,6 +66,7 @@ class CarParamsSP:
   pcmCruiseSpeed: bool = auto_field()
   intelligentCruiseButtonManagementAvailable: bool = auto_field()
   enableGasInterceptor: bool = auto_field()
+  pseudoAccAvailable: bool = auto_field()
 
   neuralNetworkLateralControl: 'CarParamsSP.NeuralNetworkLateralControl' = field(default_factory=lambda: CarParamsSP.NeuralNetworkLateralControl())
 
@@ -106,6 +107,12 @@ class IntelligentCruiseButtonManagement:
     default_factory=lambda: IntelligentCruiseButtonManagement.SendButtonState.none
   )
   vTarget: float = auto_field()
+  cancel: bool = auto_field()
+  brakeRequired: bool = auto_field()
+  atSpeedFloor: bool = auto_field()
+  vTargetSource: 'IntelligentCruiseButtonManagement.VTargetSource' = field(
+    default_factory=lambda: IntelligentCruiseButtonManagement.VTargetSource.cruise
+  )
 
   class IntelligentCruiseButtonManagementState(StrEnum):
     inactive = auto()
@@ -118,6 +125,11 @@ class IntelligentCruiseButtonManagement:
     none = auto()
     increase = auto()
     decrease = auto()
+
+  class VTargetSource(StrEnum):
+    cruise = auto()
+    plan = auto()
+    lead = auto()
 
 
 @auto_dataclass
