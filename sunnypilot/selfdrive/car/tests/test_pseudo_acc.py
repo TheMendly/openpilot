@@ -94,11 +94,19 @@ class TestPseudoAccHelpers:
     assert plan_speed_at(speeds, 1e3) == speeds[-1]
 
   def test_required_decel(self):
-    assert required_decel(30.0, 30.0, 50.0) == 0.0
-    assert required_decel(30.0, 40.0, 50.0) == 0.0  # speeding up needs no braking
+    assert required_decel(30.0, 30.0, 50.0) == 0.0  # matched speed, nothing closing
+    assert required_decel(30.0, 40.0, 50.0) == 0.0  # lead pulling away
     near = required_decel(30.0, 20.0, 20.0)
     far = required_decel(30.0, 20.0, 200.0)
     assert near < far < 0.0
+
+  def test_required_decel_is_driven_by_closing_speed_not_by_a_wished_target(self):
+    # A lead one metre ahead at the same speed is not an emergency. Framing this
+    # against a target speed instead would ask for hundreds of m/s^2 here and set
+    # every warning off.
+    assert required_decel(30.0, 30.0, 1.0) == 0.0
+    # magnitude tracks how fast we are closing
+    assert required_decel(30.0, 25.0, 20.0) > required_decel(30.0, 10.0, 20.0)
 
 
 class TestPseudoAccLead:

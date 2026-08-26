@@ -85,9 +85,16 @@ def follow_target_speed(v_ego: float, d_rel: float, v_lead: float, t_gap: float)
   return max(0.0, v_lead + K_DIST * d_err)
 
 
-def required_decel(v_ego: float, v_target: float, distance: float) -> float:
-  """Constant deceleration needed to reach v_target within `distance`."""
-  if v_target >= v_ego:
+def required_decel(v_ego: float, v_lead: float, distance: float) -> float:
+  """Deceleration needed to stop closing on the lead within `distance`.
+
+  Deliberately framed against the lead's speed, not against a wished-for target:
+  the follow law drops its target to zero once the gap is too small, and asking
+  what it takes to reach zero within the last few metres yields numbers with no
+  physical meaning (hundreds of m/s^2) that would fire every warning we have.
+  """
+  closing = v_ego - v_lead
+  if closing <= 0.0:
     return 0.0
 
-  return (v_target ** 2 - v_ego ** 2) / (2.0 * max(distance, 1.0))
+  return -(closing ** 2) / (2.0 * max(distance, 1.0))

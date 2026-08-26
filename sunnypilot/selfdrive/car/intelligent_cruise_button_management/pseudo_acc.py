@@ -138,7 +138,7 @@ class PseudoAcc:
 
     self.a_coast = coast_decel_authority(v_ego)
     if self.lead_active:
-      self.a_req = required_decel(v_ego, self.v_target_ms, max(self.lead_d_rel - D_MIN, 1.0))
+      self.a_req = required_decel(v_ego, self.lead_v_lead, max(self.lead_d_rel - D_MIN, 1.0))
     else:
       self.a_req = 0.0
 
