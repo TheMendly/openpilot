@@ -33,11 +33,14 @@ FOLLOW_TIME_GAP = (1.15, 1.45, 1.80)  # aggressive, standard, relaxed
 LOOKAHEAD_BP = [30.0 * CV.KPH_TO_MS, 70.0 * CV.KPH_TO_MS, 130.0 * CV.KPH_TO_MS]
 LOOKAHEAD_V = [2.0, 4.0, 7.0]  # s
 
-# Deceleration reachable by closing the throttle (engine braking plus drag) on a
-# flat road. Deliberately pessimistic: under-promising here means we warn the
-# driver early instead of late. TODO-SP: recalibrate from Bayon logs.
+# Deceleration reachable by closing the throttle (engine braking plus drag).
+# Measured on ~1 h of Bayon logs (both pedals up, losing speed, going straight):
+# the weakest 20% of observed coasting was -0.246 m/s^2 at 0-40 km/h, -0.248 at
+# 60-80 and -0.316 at 100-130. It is essentially flat, not rising with speed, so
+# the values below sit just under the weakest observed. Under-promising is the
+# safe direction: it warns the driver early rather than late.
 COAST_DECEL_BP = [30.0 * CV.KPH_TO_MS, 70.0 * CV.KPH_TO_MS, 130.0 * CV.KPH_TO_MS]
-COAST_DECEL_V = [-0.25, -0.40, -0.55]  # m/s^2
+COAST_DECEL_V = [-0.24, -0.24, -0.30]  # m/s^2
 
 
 def time_gap_for_personality(personality: int) -> float:
