@@ -62,6 +62,9 @@ def _initialize_intelligent_cruise_button_management(CP: structs.CarParams, CP_S
   icbm_enabled = params.get_bool("IntelligentCruiseButtonManagement")
   if icbm_enabled and CP_SP.intelligentCruiseButtonManagementAvailable and not CP.openpilotLongitudinalControl:
     CP_SP.pcmCruiseSpeed = False
+  else:
+    # Pseudo-ACC rides on ICBM: without it there is no way to move the set speed.
+    CP_SP.pseudoAccAvailable = False
 
 
 def _initialize_torque_lateral_control(CI: CarInterfaceBase, CP: structs.CarParams, enforce_torque: bool, nnlc_enabled: bool) -> None:
@@ -81,6 +84,10 @@ def _cleanup_unsupported_params(CP: structs.CarParams, CP_SP: structs.CarParamsS
   if not CP_SP.intelligentCruiseButtonManagementAvailable or CP.openpilotLongitudinalControl:
     cloudlog.warning("ICBM not available or openpilot Longitudinal Control enabled, cleaning up params")
     params.remove("IntelligentCruiseButtonManagement")
+
+  if not CP_SP.pseudoAccAvailable:
+    cloudlog.warning("Pseudo-ACC not available, cleaning up params")
+    params.remove("PseudoAcc")
 
   if not CP.openpilotLongitudinalControl and CP_SP.pcmCruiseSpeed:
     cloudlog.warning("openpilot Longitudinal Control and ICBM not available, cleaning up params")

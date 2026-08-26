@@ -4,31 +4,33 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
-import cereal.messaging as messaging
-
 from cereal import car, custom
 from opendbc.car import structs, apply_hysteresis
-from opendbc.car.hyundai.values import CAR
 from openpilot.common.constants import CV
+from openpilot.common.params import Params
 from openpilot.common.realtime import DT_CTRL
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.helpers import get_minimum_set_speed
+from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.pseudo_acc import PseudoAcc, Source
 from openpilot.sunnypilot.selfdrive.car.cruise_ext import CRUISE_BUTTON_TIMER, update_manual_button_timers
 
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 State = custom.IntelligentCruiseButtonManagement.IntelligentCruiseButtonManagementState
 SendButtonState = custom.IntelligentCruiseButtonManagement.SendButtonState
+VTargetSource = custom.IntelligentCruiseButtonManagement.VTargetSource
+
+# PseudoAcc stays free of cereal so it can be unit tested on its own; map its
+# plain source values onto the wire enum here.
+V_TARGET_SOURCES = {
+  Source.cruise: VTargetSource.cruise,
+  Source.plan: VTargetSource.plan,
+  Source.lead: VTargetSource.lead,
+}
 
 ALLOWED_SPEED_THRESHOLD = 1.8  # m/s, ~4 MPH
 HYST_GAP = 0.0  # currently disabled; TODO-SP: might need to be brand-specific
 INACTIVE_TIMER = 0.4
-
-# Bayon NON-SCC pseudo-ACC settings. The stock cruise remains responsible for
-# throttle control; ICBM only emulates RES+, SET- and, through a sentinel,
-# CANCEL. It never sends SCC acceleration or brake commands.
-BAYON_LEAD_MIN_SPEED = 35.0 * CV.KPH_TO_MS
-BAYON_LEAD_LOOKAHEAD_IDX = 16  # Model trajectory point at about 2.5 seconds
-BAYON_HARD_DECEL_CANCEL = -0.8  # m/s^2
-BAYON_CANCEL_SENTINEL = -1
+DIRECTION_DWELL = 0.6  # s to settle before reversing RES+ <-> SET-
+TARGET_SETTLE = 0.2  # s a higher target must hold before we chase it upwards
 
 
 SEND_BUTTONS = {
@@ -38,7 +40,7 @@ SEND_BUTTONS = {
 
 
 class IntelligentCruiseButtonManagement:
-  def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP):
+  def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP, params: Params = None):
     self.CP = CP
     self.CP_SP = CP_SP
 
@@ -56,48 +58,80 @@ class IntelligentCruiseButtonManagement:
 
     self.cruise_button_timers = CRUISE_BUTTON_TIMER
 
-    self.is_bayon_non_scc = self.CP.carFingerprint == CAR.HYUNDAI_BAYON_1ST_GEN_NON_SCC
-    self.cancel_required = False
-    self.long_plan_sm = messaging.SubMaster(['longitudinalPlan']) if self.is_bayon_non_scc else None
+    # Pseudo-ACC: lead-aware set speed management for platforms with no
+    # longitudinal actuation of their own. Off unless both the platform supports
+    # it and the driver opted in.
+    params = params if params is not None else Params()
+    self.pseudo_acc_enabled = bool(CP_SP.pseudoAccAvailable and params.get_bool("PseudoAcc"))
+    self.pseudo_acc = PseudoAcc()
+
+    self.cancel = False
+    self.brake_required = False
+    self.at_speed_floor = False
+    self.v_target_source = VTargetSource.cruise
+
+    self.reversal_timer = 0
+    self.last_direction = State.inactive
+    self.v_target_pending = 0
+    self.target_settle_timer = 0
 
   @property
   def v_cruise_equal(self) -> bool:
     return self.v_target == self.v_cruise_cluster
 
-  def update_calculations(self, CS: car.CarState, LP_SP: custom.LongitudinalPlanSP) -> None:
+  def update_calculations(self, CS: car.CarState, LP_SP: custom.LongitudinalPlanSP, sm, personality: int) -> None:
     speed_conv = CV.MS_TO_KPH if self.is_metric else CV.MS_TO_MPH
     ms_conv = CV.KPH_TO_MS if self.is_metric else CV.MPH_TO_MS
 
-    v_target_ms = LP_SP.vTarget
-    self.cancel_required = False
-
-    if self.long_plan_sm is not None:
-      self.long_plan_sm.update(0)
-      plan_valid = self.long_plan_sm.alive['longitudinalPlan'] and self.long_plan_sm.valid['longitudinalPlan']
-
-      if plan_valid:
-        LP = self.long_plan_sm['longitudinalPlan']
-        lead_active = LP.hasLead and CS.vEgo >= BAYON_LEAD_MIN_SPEED
-
-        if lead_active and len(LP.speeds):
-          lookahead_idx = min(BAYON_LEAD_LOOKAHEAD_IDX, len(LP.speeds) - 1)
-          v_target_ms = min(v_target_ms, LP.speeds[lookahead_idx])
-
-        self.cancel_required = bool(
-          LP.hasLead and (LP.shouldStop or LP.aTarget <= BAYON_HARD_DECEL_CANCEL)
-        )
-      elif CS.cruiseState.speedCluster > 0:
-        # A missing/stale plan must never cause an automatic RES+ command.
-        v_target_ms = min(v_target_ms, CS.cruiseState.speedCluster)
-
-    self.v_target_ms_last = apply_hysteresis(v_target_ms, self.v_target_ms_last, HYST_GAP * ms_conv)
-
-    self.v_target = round(self.v_target_ms_last * speed_conv)
     self.v_cruise_min = get_minimum_set_speed(self.is_metric)
     self.v_cruise_cluster = round(CS.cruiseState.speedCluster * speed_conv)
 
+    if self.pseudo_acc_enabled:
+      plan_valid = sm.alive['longitudinalPlan'] and sm.valid['longitudinalPlan']
+      radar_valid = sm.alive['radarState'] and sm.valid['radarState']
+      self.pseudo_acc.update(CS, sm['longitudinalPlan'], sm['radarState'], LP_SP, personality,
+                             self.v_cruise_min * ms_conv, plan_valid, radar_valid)
+
+      v_target_ms = self.pseudo_acc.v_target_ms
+      self.cancel = self.pseudo_acc.cancel
+      self.brake_required = self.pseudo_acc.brake_required
+      self.at_speed_floor = self.pseudo_acc.at_speed_floor
+      self.v_target_source = V_TARGET_SOURCES[self.pseudo_acc.source]
+    else:
+      v_target_ms = LP_SP.vTarget
+      self.cancel = False
+      self.brake_required = False
+      self.at_speed_floor = False
+      self.v_target_source = VTargetSource.cruise
+
+    self.v_target_ms_last = apply_hysteresis(v_target_ms, self.v_target_ms_last, HYST_GAP * ms_conv)
+    v_target_new = round(self.v_target_ms_last * speed_conv)
+
+    # Slowing down is accepted immediately - it is the only braking we have. Coming
+    # back up has to prove itself first, so a target flickering across a rounding
+    # boundary cannot turn into a burst of RES+.
+    if v_target_new <= self.v_target:
+      self.v_target = v_target_new
+      self.target_settle_timer = 0
+    elif v_target_new == self.v_target_pending:
+      self.target_settle_timer += 1
+      if self.target_settle_timer >= int(TARGET_SETTLE / DT_CTRL):
+        self.v_target = v_target_new
+        self.target_settle_timer = 0
+    else:
+      self.target_settle_timer = 0
+
+    self.v_target_pending = v_target_new
+
+  def direction_blocked(self, direction) -> bool:
+    """Hold still briefly after a burst before reversing, so the cluster feedback
+    has time to settle and the two directions cannot chase each other."""
+    return self.reversal_timer > 0 and direction != self.last_direction
+
   def update_state_machine(self) -> custom.IntelligentCruiseButtonManagement.SendButtonState:
     self.pre_active_timer = max(0, self.pre_active_timer - 1)
+    self.reversal_timer = max(0, self.reversal_timer - 1)
+    previous_state = self.state
 
     # HOLDING, ACCELERATING, DECELERATING, PRE_ACTIVE
     if self.state != State.inactive:
@@ -111,10 +145,11 @@ class IntelligentCruiseButtonManagement:
             if self.v_cruise_equal:
               self.state = State.holding
 
-            elif self.v_target > self.v_cruise_cluster:
+            elif self.v_target > self.v_cruise_cluster and not self.direction_blocked(State.increasing):
               self.state = State.increasing
 
-            elif self.v_target < self.v_cruise_cluster and self.v_cruise_cluster > self.v_cruise_min:
+            elif self.v_target < self.v_cruise_cluster and self.v_cruise_cluster > self.v_cruise_min \
+                 and not self.direction_blocked(State.decreasing):
               self.state = State.decreasing
 
         # HOLDING
@@ -138,6 +173,10 @@ class IntelligentCruiseButtonManagement:
         self.pre_active_timer = int(INACTIVE_TIMER / DT_CTRL)
         self.state = State.preActive
 
+    if previous_state in SEND_BUTTONS and self.state != previous_state:
+      self.last_direction = previous_state
+      self.reversal_timer = int(DIRECTION_DWELL / DT_CTRL)
+
     send_button = SEND_BUTTONS.get(self.state, SendButtonState.none)
 
     return send_button
@@ -145,28 +184,38 @@ class IntelligentCruiseButtonManagement:
   def update_readiness(self, CS: car.CarState, CC: car.CarControl) -> None:
     update_manual_button_timers(CS, self.cruise_button_timers)
 
-    ready = (CC.enabled and CS.cruiseState.enabled and
+    ready = (CC.enabled and CS.cruiseState.enabled and not CS.gasPressed and
              not CC.cruiseControl.override and not CC.cruiseControl.cancel and not CC.cruiseControl.resume)
     button_pressed = any(self.cruise_button_timers[k] > 0 for k in self.cruise_button_timers)
 
     self.is_ready = ready and not button_pressed
 
-  def run(self, CS: car.CarState, CC: car.CarControl, LP_SP: custom.LongitudinalPlanSP, is_metric: bool) -> None:
+  def run(self, CS: car.CarState, CC: car.CarControl, LP_SP: custom.LongitudinalPlanSP, sm,
+          personality: int, is_metric: bool) -> None:
     if self.CP_SP.pcmCruiseSpeed:
       return
 
     self.is_metric = is_metric
 
-    self.update_calculations(CS, LP_SP)
+    self.update_calculations(CS, LP_SP, sm, personality)
     self.update_readiness(CS, CC)
 
-    if self.is_bayon_non_scc and self.cancel_required and self.is_ready:
-      # Keep the existing Cap'n Proto enum unchanged. A negative vTarget paired
-      # with decrease is interpreted as CANCEL only by the Bayon Hyundai ICBM.
+    if not self.is_ready:
+      # Nothing to manage and nothing to cancel: start the next engagement clean.
+      self.pseudo_acc.reset()
+      self.cancel = False
+      self.brake_required = False
+      self.at_speed_floor = False
+
+    # Always run the machine so its timers keep advancing, then let a cancel
+    # override the outcome.
+    self.cruise_button = self.update_state_machine()
+
+    if self.cancel:
+      # Last resort: the stock cruise cannot go low enough, or coasting cannot
+      # shed the speed in time. Drop out entirely and hand the car back. CANCEL
+      # is its own command now, no longer a SET- carrying a sentinel speed.
       self.state = State.inactive
-      self.v_target = BAYON_CANCEL_SENTINEL
-      self.cruise_button = SendButtonState.decrease
-    else:
-      self.cruise_button = self.update_state_machine()
+      self.cruise_button = SendButtonState.none
 
     self.is_ready_prev = self.is_ready
