@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from opendbc.car import structs
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_CTRL
+from openpilot.sunnypilot.selfdrive.car.cruise_ext import CRUISE_BUTTON_TIMER
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.controller import \
   DIRECTION_DWELL, INACTIVE_TIMER, IntelligentCruiseButtonManagement, SendButtonState, State
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.helpers import get_minimum_set_speed
@@ -55,7 +56,7 @@ def make_lead(d_rel=20.0, v_lead=0.0, v_rel=-15.0):
 
 def make_cs(v_ego=25.0, set_speed_kph=100.0, enabled=True):
   set_speed = set_speed_kph * CV.KPH_TO_MS
-  return SimpleNamespace(vEgo=v_ego, gasPressed=False,
+  return SimpleNamespace(vEgo=v_ego, gasPressed=False, buttonEvents=[],
                          cruiseState=SimpleNamespace(enabled=enabled, speed=set_speed, speedCluster=set_speed))
 
 
@@ -65,6 +66,11 @@ def make_cc(enabled=True):
 
 
 def make_icbm(pseudo_acc=True):
+  # CRUISE_BUTTON_TIMER is a module level dict the controller aliases, so it
+  # carries over between instances. Clear it so each test starts clean.
+  for key in CRUISE_BUTTON_TIMER:
+    CRUISE_BUTTON_TIMER[key] = 0
+
   CP = structs.CarParams()
   CP.openpilotLongitudinalControl = False
   CP_SP = structs.CarParamsSP()
