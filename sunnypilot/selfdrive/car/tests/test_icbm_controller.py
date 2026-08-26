@@ -17,14 +17,6 @@ from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.hel
 V_MIN_KPH = get_minimum_set_speed(True)
 
 
-class FakeParams:
-  def __init__(self, pseudo_acc: bool):
-    self.pseudo_acc = pseudo_acc
-
-  def get_bool(self, key):
-    return self.pseudo_acc if key == "PseudoAcc" else False
-
-
 class FakeSubMaster:
   """Stands in for selfdrived's SubMaster."""
 
@@ -76,7 +68,7 @@ def make_icbm(pseudo_acc=True):
   CP_SP = structs.CarParamsSP()
   CP_SP.pcmCruiseSpeed = False
   CP_SP.pseudoAccAvailable = pseudo_acc
-  return IntelligentCruiseButtonManagement(CP, CP_SP, FakeParams(pseudo_acc))
+  return IntelligentCruiseButtonManagement(CP, CP_SP)
 
 
 def drive(icbm, seconds, cs, cc=None, sm=None, v_target_kph=100.0, personality=1):

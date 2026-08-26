@@ -7,7 +7,6 @@ See the LICENSE.md file in the root directory for more details.
 from cereal import car, custom
 from opendbc.car import structs, apply_hysteresis
 from openpilot.common.constants import CV
-from openpilot.common.params import Params
 from openpilot.common.realtime import DT_CTRL
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.helpers import get_minimum_set_speed
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.pseudo_acc import PseudoAcc, Source
@@ -40,7 +39,7 @@ SEND_BUTTONS = {
 
 
 class IntelligentCruiseButtonManagement:
-  def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP, params: Params = None):
+  def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP):
     self.CP = CP
     self.CP_SP = CP_SP
 
@@ -59,10 +58,9 @@ class IntelligentCruiseButtonManagement:
     self.cruise_button_timers = CRUISE_BUTTON_TIMER
 
     # Pseudo-ACC: lead-aware set speed management for platforms with no
-    # longitudinal actuation of their own. Off unless both the platform supports
-    # it and the driver opted in.
-    params = params if params is not None else Params()
-    self.pseudo_acc_enabled = bool(CP_SP.pseudoAccAvailable and params.get_bool("PseudoAcc"))
+    # longitudinal actuation of their own. Set by the car interface, and only
+    # true when ICBM itself is enabled.
+    self.pseudo_acc_enabled = bool(CP_SP.pseudoAccAvailable)
     self.pseudo_acc = PseudoAcc()
 
     self.cancel = False
