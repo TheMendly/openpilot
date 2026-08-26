@@ -25,6 +25,12 @@ ICMB_UNAVAILABLE = tr_noop("Intelligent Cruise Button Management is currently un
 ICMB_UNAVAILABLE_LONG_AVAILABLE = tr_noop("Disable the sunnypilot Longitudinal Control (alpha) toggle to allow Intelligent Cruise Button Management.")
 ICMB_UNAVAILABLE_LONG_UNAVAILABLE = tr_noop("sunnypilot Longitudinal Control is the default longitudinal control for this platform.")
 
+PSEUDO_ACC_DESC = tr_noop("Builds on ICBM to follow the vehicle ahead in town and on the highway, lowering the " +
+                          "stock cruise set speed as traffic requires. The car cannot brake: sunnypilot will warn " +
+                          "you and disengage cruise when coasting is not enough. Keep your foot ready.")
+PSEUDO_ACC_UNAVAILABLE = tr_noop("Pseudo-ACC is currently unavailable on this platform.")
+PSEUDO_ACC_NEEDS_ICBM = tr_noop("Enable Intelligent Cruise Button Management to use Pseudo-ACC.")
+
 ACC_ENABLED_DESCRIPTION = tr_noop("Enable custom Short & Long press increments for cruise speed increase/decrease.")
 ACC_NOLONG_DESCRIPTION = tr_noop("This feature can only be used with sunnypilot longitudinal control enabled.")
 ACC_PCMCRUISE_DISABLED_DESCRIPTION = tr_noop("This feature is not supported on this platform due to vehicle limitations.")
@@ -46,6 +52,11 @@ class CruiseLayout(Widget):
       title=tr("Intelligent Cruise Button Management (ICBM) (Alpha)"),
       description="",
       param="IntelligentCruiseButtonManagement")
+
+    self.pseudo_acc_toggle = toggle_item_sp(
+      title=tr("Pseudo-ACC via ICBM (Alpha)"),
+      description="",
+      param="PseudoAcc")
 
     self.scc_v_toggle = toggle_item_sp(
       title=tr("Smart Cruise Control - Vision"),
@@ -89,6 +100,7 @@ class CruiseLayout(Widget):
 
     items = [
       self.icbm_toggle,
+      self.pseudo_acc_toggle,
       self.dec_toggle,
       self.scc_v_toggle,
       self.scc_m_toggle,
@@ -98,6 +110,22 @@ class CruiseLayout(Widget):
       self.sla_settings_button,
     ]
     return items
+
+  def _update_pseudo_acc_toggle(self, has_icbm: bool) -> None:
+    available = bool(ui_state.CP_SP.pseudoAccAvailable)
+
+    if available and has_icbm:
+      self.pseudo_acc_toggle.action_item.set_enabled(ui_state.is_offroad())
+      new_desc = tr(PSEUDO_ACC_DESC)
+    else:
+      ui_state.params.remove("PseudoAcc")
+      self.pseudo_acc_toggle.action_item.set_enabled(False)
+      blocker = PSEUDO_ACC_NEEDS_ICBM if available else PSEUDO_ACC_UNAVAILABLE
+      new_desc = "<b>" + tr(blocker) + "</b>\n\n" + tr(PSEUDO_ACC_DESC)
+
+    if self.pseudo_acc_toggle.description != new_desc:
+      self.pseudo_acc_toggle.set_description(new_desc)
+      self.pseudo_acc_toggle.show_description(True)
 
   def _render(self, rect):
     if self._current_panel == PanelType.SLA:
@@ -109,6 +137,7 @@ class CruiseLayout(Widget):
     self._set_current_panel(PanelType.CRUISE)
     self._scroller.show_event()
     self.icbm_toggle.show_description(True)
+    self.pseudo_acc_toggle.show_description(True)
     self.custom_acc_toggle.show_description(True)
 
   def _set_current_panel(self, panel: PanelType):
@@ -142,6 +171,8 @@ class CruiseLayout(Widget):
           self.icbm_toggle.set_description(new_desc)
           self.icbm_toggle.show_description(True)
 
+      self._update_pseudo_acc_toggle(has_icbm)
+
       if has_long or has_icbm:
         self.custom_acc_toggle.action_item.set_enabled(((has_long and not ui_state.CP.pcmCruise) or has_icbm) and ui_state.is_offroad())
         self.dec_toggle.action_item.set_enabled(has_long)
@@ -161,6 +192,8 @@ class CruiseLayout(Widget):
       has_icbm = has_long = False
       self.icbm_toggle.action_item.set_enabled(False)
       self.icbm_toggle.set_description(tr(ONROAD_ONLY_DESCRIPTION))
+      self.pseudo_acc_toggle.action_item.set_enabled(False)
+      self.pseudo_acc_toggle.set_description(tr(ONROAD_ONLY_DESCRIPTION))
 
     show_custom_acc_desc = False
 
