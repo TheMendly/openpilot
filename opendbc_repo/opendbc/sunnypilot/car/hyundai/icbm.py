@@ -19,12 +19,13 @@ BUTTON_COPIES = 2
 BUTTON_COPIES_TIME = 7
 BUTTON_COPIES_TIME_IMPERIAL = [BUTTON_COPIES_TIME + 3, 70]
 BUTTON_COPIES_TIME_METRIC = [BUTTON_COPIES_TIME, 40]
-BAYON_CANCEL_SENTINEL = -1
 
-# The Bayon ICE non-SCC CLU11 receiver rejects the generic frame % 16 counter
-# sequence. Build the frame from the latest stock CLU11 and send the next
+# Platforms whose CLU11 receiver rejects the generic frame % 16 counter sequence.
+# For those we rebuild the frame from the latest stock CLU11 and send the next
 # expected AliveCnt1 value instead.
-BAYON_CLU11_FIELDS = (
+CLU11_COUNTER_SYNC_CAR = (CAR.HYUNDAI_BAYON_1ST_GEN_NON_SCC,)
+
+CLU11_SYNC_FIELDS = (
   "CF_Clu_CruiseSwState",
   "CF_Clu_CruiseSwMain",
   "CF_Clu_SldMainSW",
@@ -39,6 +40,13 @@ BAYON_CLU11_FIELDS = (
   "CF_Clu_AliveCnt1",
 )
 
+# RES+ / SET- are sent as discrete taps rather than a held button: one tap is one
+# set-speed step, and the silence in between is what lets cruiseState.speedCluster
+# settle so the controller closes the loop on a real value instead of guessing
+# mid-press. CANCEL is not pulsed - it is idempotent and we want it to land now.
+TAP_FRAMES = 4  # stock CLU11 frames per tap, ~80 ms at 50 Hz
+TAP_GAP = 0.18  # s of silence between taps
+
 BUTTONS = {
   SendButtonState.increase: Buttons.RES_ACCEL,
   SendButtonState.decrease: Buttons.SET_DECEL,
@@ -48,28 +56,47 @@ BUTTONS = {
 class IntelligentCruiseButtonManagementInterface(IntelligentCruiseButtonManagementInterfaceBase):
   def __init__(self, CP, CP_SP):
     super().__init__(CP, CP_SP)
-    self.last_bayon_clu11_counter = None
+    self.counter_sync = CP.carFingerprint in CLU11_COUNTER_SYNC_CAR
+    self.last_clu11_counter = None
+    self.tap_frames = 0
+    self.tap_end_frame = 0
 
-  def create_bayon_can_button_message(self, packer, CS, send_button) -> list[CanData]:
+  def reset_button_state(self) -> None:
+    self.last_clu11_counter = None
+    self.tap_frames = 0
+    self.tap_end_frame = 0
+
+  def create_synced_clu11_message(self, packer, CS, send_button, pulsed: bool) -> list[CanData]:
     stock_counter = int(CS.clu11["CF_Clu_AliveCnt1"])
 
-    # card runs at 100 Hz while the stock CLU11 is approximately 50 Hz. Send
-    # only once for each newly observed stock counter instead of flooding the
-    # bus with duplicate or out-of-order counters.
-    if stock_counter == self.last_bayon_clu11_counter:
+    # card runs at 100 Hz while the stock CLU11 is approximately 50 Hz. Send only
+    # once per newly observed stock counter instead of flooding the bus with
+    # duplicate or out-of-order counters.
+    if stock_counter == self.last_clu11_counter:
       return []
 
-    self.last_bayon_clu11_counter = stock_counter
-    values = {signal: CS.clu11[signal] for signal in BAYON_CLU11_FIELDS}
+    self.last_clu11_counter = stock_counter
+
+    if pulsed:
+      if self.tap_frames >= TAP_FRAMES:
+        if (self.frame - self.tap_end_frame) * DT_CTRL < TAP_GAP:
+          return []
+        self.tap_frames = 0
+
+      self.tap_frames += 1
+      if self.tap_frames >= TAP_FRAMES:
+        self.tap_end_frame = self.frame
+
+    values = {signal: CS.clu11[signal] for signal in CLU11_SYNC_FIELDS}
     values["CF_Clu_CruiseSwState"] = send_button
     values["CF_Clu_AliveCnt1"] = (stock_counter + 1) % 0x10
 
     self.last_button_frame = self.frame
     return [packer.make_can_msg("CLU11", 0, values)]
 
-  def create_can_mock_button_messages(self, packer, CS, send_button) -> list[CanData]:
-    if self.CP.carFingerprint == CAR.HYUNDAI_BAYON_1ST_GEN_NON_SCC:
-      return self.create_bayon_can_button_message(packer, CS, send_button)
+  def create_can_mock_button_messages(self, packer, CS, send_button, pulsed: bool = True) -> list[CanData]:
+    if self.counter_sync:
+      return self.create_synced_clu11_message(packer, CS, send_button, pulsed)
 
     can_sends = []
     copies_xp = BUTTON_COPIES_TIME_METRIC if CS.is_metric else BUTTON_COPIES_TIME_IMPERIAL
@@ -107,15 +134,17 @@ class IntelligentCruiseButtonManagementInterface(IntelligentCruiseButtonManageme
     self.frame = frame
     self.last_button_frame = last_button_frame
 
-    if self.ICBM.sendButton != SendButtonState.none:
-      bayon_cancel = (self.CP.carFingerprint == CAR.HYUNDAI_BAYON_1ST_GEN_NON_SCC and
-                      self.ICBM.sendButton == SendButtonState.decrease and
-                      self.ICBM.vTarget <= BAYON_CANCEL_SENTINEL)
-      send_button = Buttons.CANCEL if bayon_cancel else BUTTONS[self.ICBM.sendButton]
+    cancel = bool(self.ICBM.cancel)
 
-      if self.CP.carFingerprint in CANFD_CAR:
-        can_sends.extend(self.create_canfd_mock_button_messages(packer, CS, CAN, send_button))
-      else:
-        can_sends.extend(self.create_can_mock_button_messages(packer, CS, send_button))
+    if not cancel and self.ICBM.sendButton == SendButtonState.none:
+      self.reset_button_state()
+      return can_sends
+
+    send_button = Buttons.CANCEL if cancel else BUTTONS[self.ICBM.sendButton]
+
+    if self.CP.carFingerprint in CANFD_CAR:
+      can_sends.extend(self.create_canfd_mock_button_messages(packer, CS, CAN, send_button))
+    else:
+      can_sends.extend(self.create_can_mock_button_messages(packer, CS, send_button, pulsed=not cancel))
 
     return can_sends
