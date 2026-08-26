@@ -121,6 +121,32 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
     ET.USER_DISABLE: EngagementAlert(AudibleAlert.none),
   },
 
+  # Pseudo-ACC escalation ladder. The stock cruise has no braking authority, so
+  # each rung has to be unmistakable about who is expected to act.
+  EventNameSP.pseudoAccSpeedFloor: {
+    ET.WARNING: Alert(
+      "Pseudo-ACC at minimum set speed",
+      "Slow down manually if needed",
+      AlertStatus.normal, AlertSize.small,
+      Priority.LOW, VisualAlert.none, AudibleAlert.none, 1.),
+  },
+
+  EventNameSP.pseudoAccBrakeRequired: {
+    ET.WARNING: Alert(
+      "Braking Required",
+      "Coasting cannot slow down in time",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.MID, VisualAlert.fcw, AudibleAlert.promptDistracted, 2.),
+  },
+
+  EventNameSP.pseudoAccTakeControl: {
+    ET.WARNING: Alert(
+      "TAKE CONTROL",
+      "Pseudo-ACC disengaged, brake now",
+      AlertStatus.critical, AlertSize.full,
+      Priority.HIGHEST, VisualAlert.fcw, AudibleAlert.warningImmediate, 3.),
+  },
+
   EventNameSP.silentBrakeHold: {
     ET.WARNING: EngagementAlert(AudibleAlert.none),
     ET.NO_ENTRY: NoEntryAlert("Brake Hold Active"),

@@ -481,7 +481,16 @@ class SelfdriveD(CruiseHelper):
           self.events.add(EventName.personalityChanged)
         self.experimental_mode_switched = False
 
-    self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], self.is_metric)
+    self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], self.sm, self.personality, self.is_metric)
+
+    # Pseudo-ACC escalation: the stock cruise cannot brake, so every level of the
+    # ladder has to reach the driver.
+    if self.icbm.cancel:
+      self.events_sp.add(custom.OnroadEventSP.EventName.pseudoAccTakeControl)
+    elif self.icbm.brake_required:
+      self.events_sp.add(custom.OnroadEventSP.EventName.pseudoAccBrakeRequired)
+    elif self.icbm.at_speed_floor:
+      self.events_sp.add(custom.OnroadEventSP.EventName.pseudoAccSpeedFloor)
 
   def data_sample(self):
     _car_state = messaging.recv_one(self.car_state_sock)
@@ -591,6 +600,10 @@ class SelfdriveD(CruiseHelper):
     icbm.state = self.icbm.state
     icbm.sendButton = self.icbm.cruise_button
     icbm.vTarget = self.icbm.v_target
+    icbm.cancel = self.icbm.cancel
+    icbm.brakeRequired = self.icbm.brake_required
+    icbm.atSpeedFloor = self.icbm.at_speed_floor
+    icbm.vTargetSource = self.icbm.v_target_source
 
     self.pm.send('selfdriveStateSP', ss_sp_msg)
 

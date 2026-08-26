@@ -103,6 +103,10 @@ class ControlsExt(ModelStateBase):
     CC_SP.intelligentCruiseButtonManagement.state = icbm_src.state
     CC_SP.intelligentCruiseButtonManagement.sendButton = icbm_src.sendButton
     CC_SP.intelligentCruiseButtonManagement.vTarget = icbm_src.vTarget
+    CC_SP.intelligentCruiseButtonManagement.cancel = icbm_src.cancel
+    CC_SP.intelligentCruiseButtonManagement.brakeRequired = icbm_src.brakeRequired
+    CC_SP.intelligentCruiseButtonManagement.atSpeedFloor = icbm_src.atSpeedFloor
+    CC_SP.intelligentCruiseButtonManagement.vTargetSource = icbm_src.vTargetSource
 
     return CC_SP
 
