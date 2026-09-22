@@ -28,7 +28,8 @@ V_TARGET_SOURCES = {
 ALLOWED_SPEED_THRESHOLD = 1.8  # m/s, ~4 MPH
 HYST_GAP = 0.0  # currently disabled; TODO-SP: might need to be brand-specific
 INACTIVE_TIMER = 0.4
-DIRECTION_DWELL = 0.35  # s to settle before reversing RES+ <-> SET-
+DIRECTION_DWELL = 0.6  # s to settle before reversing RES+ <-> SET-. Do not shorten: it is
+# what keeps a noisy lead from turning the faster target ramp into button hunting.
 TARGET_SETTLE = 0.2  # s a higher target must hold before we chase it upwards
 TARGET_SETTLE_STEP = 2  # km/h or mph; a jump this big is real, not rounding flicker
 
