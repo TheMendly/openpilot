@@ -200,13 +200,22 @@ class TestIcbmLongPressIncrement:
     CS.buttonEvents = [ButtonEvent(type=button_type, pressed=False)]
     self.v_cruise_helper.update_v_cruise(CS, enabled=True, is_metric=True)
 
-  @pytest.mark.parametrize("initial,expected", [(122, 130), (120, 130), (129, 130)])
+  def test_a_set_speed_seeded_from_the_cluster_is_not_a_partial_interval(self):
+    # cruiseState.speed is a float32, so an exact 120 km/h comes back as
+    # 119.99999542. Left alone that reads as a partial interval and the long press
+    # snaps onto the decade it is already on, doing nothing.
+    self.engage(120)
+    assert self.v_cruise_helper.v_cruise_kph != 120.0  # the float32 round trip
+    self.v_cruise_helper.update_v_cruise_delta(True, 1.)
+    assert self.v_cruise_helper.v_cruise_kph == 120.0
+
+  @pytest.mark.parametrize("initial,expected", [(122, 130), (120, 130), (129, 130), (130, 140)])
   def test_long_press_accel_walks_the_decade_grid(self, initial, expected):
     self.engage(initial)
     self.press(ButtonType.accelCruise, True, initial)
     assert self.v_cruise_helper.v_cruise_kph == expected
 
-  @pytest.mark.parametrize("initial,expected", [(122, 120), (130, 120), (121, 120)])
+  @pytest.mark.parametrize("initial,expected", [(122, 120), (130, 120), (121, 120), (120, 110)])
   def test_long_press_decel_walks_the_decade_grid(self, initial, expected):
     self.engage(initial)
     self.press(ButtonType.decelCruise, True, initial)

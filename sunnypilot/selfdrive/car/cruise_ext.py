@@ -80,6 +80,13 @@ class VCruiseHelperSP:
     self.long_increment = self.params.get("CustomAccLongPressIncrement", return_default=True)
 
   def update_v_cruise_delta(self, long_press: bool, v_cruise_delta: float) -> tuple[bool, float]:
+    # cruiseState.speed is a float32 in m/s, so a set speed seeded from the cluster
+    # lands a hair off a round number: 120 km/h arrives as 119.99999542. The caller
+    # then sees a non-zero remainder, treats it as a partial interval, and "snaps up"
+    # onto the very multiple it is already sitting on - the long press does nothing.
+    # Settle the value here, before it is taken modulo the step.
+    self.v_cruise_kph = round(self.v_cruise_kph, 2)
+
     if not self.custom_acc_enabled:
       multiplier = LONG_PRESS_MULTIPLIER
       # Only where ICBM drives the stock cruise, and only in metric: the base delta is
