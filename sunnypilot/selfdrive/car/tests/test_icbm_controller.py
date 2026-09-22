@@ -119,6 +119,36 @@ class TestIcbmStateMachine:
 
     assert SendButtonState.increase not in buttons
 
+  def test_a_continuously_rising_target_is_followed(self):
+    # Regression: the settle timer used to require the rounded target to be *equal*
+    # to the previous frame's, so a target climbing faster than one unit per
+    # TARGET_SETTLE restarted the timer forever and the cluster was never raised.
+    icbm = make_icbm(pseudo_acc=False)
+    cs, cc, sm = make_cs(set_speed_kph=100.0), make_cc(), FakeSubMaster()
+
+    v = 100.0 * CV.KPH_TO_MS
+    v_end = 105.0 * CV.KPH_TO_MS
+    buttons = []
+    for _ in range(int(1.5 / DT_CTRL)):
+      v = min(v + 1.5 * DT_CTRL, v_end)
+      icbm.run(cs, cc, SimpleNamespace(vTarget=v), sm, 1, True)
+      buttons.append(icbm.cruise_button)
+
+    assert SendButtonState.increase in buttons
+    assert icbm.v_target >= 104
+
+  def test_a_large_upward_step_is_accepted_immediately(self):
+    icbm = make_icbm(pseudo_acc=False)
+    cs, cc, sm = make_cs(set_speed_kph=100.0), make_cc(), FakeSubMaster()
+
+    # a driver long press: the cluster has already jumped, so waiting out the
+    # anti-flicker debounce would only make us chase it late
+    high = SimpleNamespace(vTarget=110.0 * CV.KPH_TO_MS)
+    for _ in range(2):
+      icbm.run(cs, cc, high, sm, 1, True)
+
+    assert icbm.v_target == 110
+
   def test_reversal_is_held_off(self):
     icbm = make_icbm()
     # cluster below the target, so the controller starts out pressing RES+

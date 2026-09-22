@@ -6,13 +6,16 @@ See the LICENSE.md file in the root directory for more details.
 """
 from types import SimpleNamespace
 
+import pytest
+
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_CTRL
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.helpers import \
   D_MIN, coast_decel_authority, desired_follow_distance, follow_target_speed, lookahead_time, \
   plan_speed_at, required_decel, time_gap_for_personality
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.pseudo_acc import \
-  A_UP_MAX, LEAD_ACQUIRE_T, LEAD_RELEASE_T, PseudoAcc, Source
+  A_UP_DROPOUT, A_UP_MAX, DROPOUT_RAMP_T, LEAD_ACQUIRE_T, LEAD_RELEASE_T, SET_SPEED_STEP, \
+  PseudoAcc, Source
 
 V_CRUISE_MIN_MS = 30.0 * CV.KPH_TO_MS
 
@@ -162,7 +165,7 @@ class TestPseudoAccTarget:
     assert pa.source == Source.lead
     assert pa.v_target_ms < 30.0
 
-  def test_upward_ramp_is_rate_limited(self):
+  def test_dropout_ramp_is_gentle(self):
     pa = PseudoAcc()
     run_for(pa, 2.0, cs=make_cs(v_ego=20.0), lp_sp=make_lp_sp(30.0),
             radar=make_radar(make_lead(d_rel=25.0, v_lead=15.0)))
@@ -173,7 +176,69 @@ class TestPseudoAccTarget:
     elapsed = LEAD_RELEASE_T * 1.5 + 0.1
     run_for(pa, elapsed, cs=make_cs(v_ego=20.0), lp_sp=make_lp_sp(30.0),
             radar=make_radar(), plan=make_plan(has_lead=False))
-    assert pa.v_target_ms <= slowed + A_UP_MAX * elapsed + 1e-6
+    assert pa.v_target_ms <= slowed + A_UP_DROPOUT * elapsed + 1e-6
+
+  def test_recovery_with_an_active_lead_uses_the_fast_ramp(self):
+    pa = PseudoAcc()
+    run_for(pa, 2.0, cs=make_cs(v_ego=20.0), lp_sp=make_lp_sp(30.0),
+            radar=make_radar(make_lead(d_rel=25.0, v_lead=15.0)))
+    slowed = pa.v_target_ms
+    assert slowed < 30.0
+
+    # the lead pulls away without ever dropping out: no reason to crawl back up
+    elapsed = 1.0
+    run_for(pa, elapsed, cs=make_cs(v_ego=20.0), lp_sp=make_lp_sp(30.0),
+            radar=make_radar(make_lead(d_rel=120.0, v_lead=32.0)))
+    assert pa.v_target_ms == pytest.approx(slowed + A_UP_MAX * elapsed, abs=0.05)
+    # far beyond what the gentle dropout rate could have delivered
+    assert pa.v_target_ms > slowed + A_UP_DROPOUT * elapsed * 2
+
+  def test_driver_set_speed_increase_is_not_rate_limited(self):
+    pa = PseudoAcc()
+    run_for(pa, 1.0, cs=make_cs(v_ego=25.0), lp_sp=make_lp_sp(30.0), radar_valid=False)
+    assert pa.v_target_ms == pytest.approx(30.0, abs=1e-6)
+
+    # one frame with a set speed 3 m/s higher: the cluster has already jumped there
+    pa.update(make_cs(v_ego=25.0), make_plan(speeds=[33.0] * 17, has_lead=False),
+              make_radar(), make_lp_sp(33.0), 1, V_CRUISE_MIN_MS, True, False)
+    assert pa.v_target_ms == pytest.approx(33.0, abs=1e-6)
+
+  def test_driver_step_is_still_capped_by_the_lead(self):
+    pa = PseudoAcc()
+    lead = make_lead(d_rel=25.0, v_lead=15.0)
+    run_for(pa, 2.0, cs=make_cs(v_ego=20.0), lp_sp=make_lp_sp(30.0), radar=make_radar(lead))
+    assert pa.source == Source.lead
+    followed = pa.v_target_ms
+
+    # driver asks for a lot more speed: the follow law still governs
+    pa.update(make_cs(v_ego=20.0), make_plan(), make_radar(lead), make_lp_sp(40.0),
+              1, V_CRUISE_MIN_MS, True, True)
+    assert pa.source == Source.lead
+    assert pa.v_target_ms == pytest.approx(followed, abs=0.05)
+
+  def test_smooth_source_rise_is_not_a_driver_step(self):
+    pa = PseudoAcc()
+    run_for(pa, 1.0, cs=make_cs(v_ego=20.0), lp_sp=make_lp_sp(20.0), radar_valid=False)
+
+    # a source easing up frame by frame must stay on the ramp, not be waved through
+    v_sp = 20.0
+    for _ in range(50):
+      v_sp += SET_SPEED_STEP * 0.5
+      pa.update(make_cs(v_ego=20.0), make_plan(speeds=[v_sp] * 17, has_lead=False),
+                make_radar(), make_lp_sp(v_sp), 1, V_CRUISE_MIN_MS, True, False)
+      assert not pa.set_speed_step
+
+    assert pa.v_target_ms < v_sp
+
+  def test_dropout_window_expires(self):
+    pa = PseudoAcc()
+    run_for(pa, 2.0, cs=make_cs(v_ego=20.0), lp_sp=make_lp_sp(30.0),
+            radar=make_radar(make_lead(d_rel=25.0, v_lead=15.0)))
+
+    # let the lead go, then wait out the gentle window
+    run_for(pa, LEAD_RELEASE_T + DROPOUT_RAMP_T + 0.1, cs=make_cs(v_ego=20.0),
+            lp_sp=make_lp_sp(30.0), radar=make_radar(), plan=make_plan(has_lead=False))
+    assert pa.dropout_t == 0.0
 
   def test_stale_plan_never_asks_for_more_speed(self):
     pa = PseudoAcc()

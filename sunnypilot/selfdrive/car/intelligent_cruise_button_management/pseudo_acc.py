@@ -18,8 +18,19 @@ LEAD_MAX_LATERAL = 2.5  # m
 LEAD_ACQUIRE_T = 0.35  # s of continuously valid lead before we act on it
 LEAD_RELEASE_T = 0.80  # s of continuously invalid lead before we let go
 
-# Target ramp. Losing a lead must not fire a burst of RES+.
-A_UP_MAX = 0.4  # m/s^2
+# Target ramp. Raising the *set speed* is not an acceleration command: the stock
+# cruise runs its own throttle ramp underneath us, so coming back up can be brisk.
+# The gentle rate exists for one case only - a lead that disappears, where snapping
+# straight back to the cruise speed would fire a burst of RES+.
+A_UP_MAX = 1.5  # m/s^2, normal upward rate
+A_UP_DROPOUT = 0.4  # m/s^2, for a short while after losing a lead
+DROPOUT_RAMP_T = 2.0  # s the gentle rate stays in force after the lead is released
+
+# A single-frame rise this large is a set speed change (driver button, or a speed
+# limit taking effect), not a continuous source easing up. It is handed straight
+# through: the cluster has already jumped, and creeping up from the old value would
+# make ICBM send SET- and then RES+ over the same press.
+SET_SPEED_STEP = 0.7  # m/s (~2.5 km/h)
 
 # Escalation thresholds.
 BRAKE_REQUIRED_T = 0.50  # s the coast authority must be exceeded before warning
@@ -62,6 +73,9 @@ class PseudoAcc:
     self.lead_d_rel = 0.0
     self.lead_v_lead = 0.0
     self.lead_v_rel = 0.0
+    self.dropout_t = 0.0
+
+    self.set_speed_step = False
 
     self.a_req = 0.0
     self.a_coast = 0.0
@@ -78,6 +92,8 @@ class PseudoAcc:
     self.initialized = False
 
   def update_lead(self, lead, plan_valid: bool, long_plan) -> None:
+    lead_active_prev = self.lead_active
+
     valid = bool(lead is not None and lead.status and lead.modelProb >= LEAD_PROB_MIN and
                  0.0 < lead.dRel < LEAD_MAX_DIST and abs(lead.yRel) < LEAD_MAX_LATERAL)
 
@@ -99,6 +115,12 @@ class PseudoAcc:
       self.lead_active = True
     elif self.lead_active and self.lead_invalid_t >= LEAD_RELEASE_T:
       self.lead_active = False
+
+    # Losing a lead is the one case where coming back up has to be gentle.
+    if lead_active_prev and not self.lead_active:
+      self.dropout_t = DROPOUT_RAMP_T
+    else:
+      self.dropout_t = max(0.0, self.dropout_t - DT_CTRL)
 
     if not self.lead_active:
       self.lead_d_rel = 0.0
@@ -129,9 +151,16 @@ class PseudoAcc:
       self.v_target_ms = v_target
       self.initialized = True
 
-    # Rate limit upwards only: shed speed as fast as the situation demands, but
-    # come back gently so a lead dropout does not snap the car back to cruise.
-    return min(v_target, self.v_target_ms + A_UP_MAX * DT_CTRL)
+    # Rate limit upwards only: shed speed as fast as the situation demands, and come
+    # back like a real ACC unless we have just lost a lead.
+    a_up = A_UP_DROPOUT if self.dropout_t > 0.0 else A_UP_MAX
+    v_ramped = self.v_target_ms + a_up * DT_CTRL
+    if self.set_speed_step:
+      v_ramped = max(v_ramped, v_target)
+
+    # The min() still governs: a set speed step can never push the target above the
+    # follow law, the plan, or the stale-plan cluster cap.
+    return min(v_target, v_ramped)
 
   def update_escalation(self, CS, long_plan, plan_valid: bool, v_cruise_min_ms: float) -> None:
     v_ego = max(CS.vEgo, 0.0)
@@ -172,7 +201,11 @@ class PseudoAcc:
 
   def update(self, CS, long_plan, radar_state, LP_SP, personality: int, v_cruise_min_ms: float,
              plan_valid: bool, radar_valid: bool) -> None:
-    self.v_target_sp = LP_SP.vTarget
+    v_target_sp = float(LP_SP.vTarget)
+    # initialized guards the 0 -> cruise jump on the first frame and after a reset().
+    self.set_speed_step = self.initialized and v_target_sp > self.v_target_sp + SET_SPEED_STEP
+    self.v_target_sp = v_target_sp
+
     lead = radar_state.leadOne if radar_valid else None
 
     self.update_lead(lead, plan_valid, long_plan)

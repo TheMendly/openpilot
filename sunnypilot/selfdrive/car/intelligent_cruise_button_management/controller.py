@@ -28,8 +28,9 @@ V_TARGET_SOURCES = {
 ALLOWED_SPEED_THRESHOLD = 1.8  # m/s, ~4 MPH
 HYST_GAP = 0.0  # currently disabled; TODO-SP: might need to be brand-specific
 INACTIVE_TIMER = 0.4
-DIRECTION_DWELL = 0.6  # s to settle before reversing RES+ <-> SET-
+DIRECTION_DWELL = 0.35  # s to settle before reversing RES+ <-> SET-
 TARGET_SETTLE = 0.2  # s a higher target must hold before we chase it upwards
+TARGET_SETTLE_STEP = 2  # km/h or mph; a jump this big is real, not rounding flicker
 
 
 SEND_BUTTONS = {
@@ -111,7 +112,15 @@ class IntelligentCruiseButtonManagement:
     if v_target_new <= self.v_target:
       self.v_target = v_target_new
       self.target_settle_timer = 0
-    elif v_target_new == self.v_target_pending:
+    elif v_target_new >= self.v_target + TARGET_SETTLE_STEP:
+      # A driver set speed change, or the road clearing outright. Too big to be the
+      # rounding flicker the settle timer exists for, so do not sit on it.
+      self.v_target = v_target_new
+      self.target_settle_timer = 0
+    elif v_target_new >= self.v_target_pending:
+      # Keep accumulating while the target rises monotonically. Requiring an exact
+      # match here would restart the timer on every new value, so a target ramping
+      # faster than TARGET_SETTLE per unit would never be followed at all.
       self.target_settle_timer += 1
       if self.target_settle_timer >= int(TARGET_SETTLE / DT_CTRL):
         self.v_target = v_target_new
