@@ -19,6 +19,13 @@ class BlindSpotIndicators:
     self._blind_spot_left_alpha_filter = FirstOrderFilter(0, 0.15, 1 / gui_app.target_fps)
     self._blind_spot_right_alpha_filter = FirstOrderFilter(0, 0.15, 1 / gui_app.target_fps)
 
+    # The upper right corner is shared with the pseudo-ACC badge, which is taller than
+    # this icon's default offset. The HUD tells us how far to move out of its way.
+    self._right_y_offset = 0
+
+  def set_right_y_offset(self, offset: int) -> None:
+    self._right_y_offset = offset
+
   def update(self) -> None:
     sm = ui_state.sm
     CS = sm['carState']
@@ -46,7 +53,7 @@ class BlindSpotIndicators:
 
     if self._blind_spot_right_alpha_filter.x > 0.01:
       pos_x = int(rect.x + rect.width - BLIND_SPOT_MARGIN_X - self._txt_blind_spot_right.width)
-      pos_y = int(rect.y + BLIND_SPOT_Y_OFFSET)
+      pos_y = int(rect.y + BLIND_SPOT_Y_OFFSET + self._right_y_offset)
       alpha = int(255 * self._blind_spot_right_alpha_filter.x)
       color = rl.Color(255, 255, 255, alpha)
       rl.draw_texture_ex(self._txt_blind_spot_right, rl.Vector2(pos_x, pos_y), 0.0, 1.0, color)
