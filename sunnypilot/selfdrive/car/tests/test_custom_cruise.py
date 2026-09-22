@@ -1,11 +1,13 @@
 import pytest
 
-from cereal import car
+from cereal import car, custom
 from openpilot.common.constants import CV
 from openpilot.common.parameterized import parameterized_class
 from openpilot.common.params import Params
-from openpilot.selfdrive.car.cruise import V_CRUISE_INITIAL
+from openpilot.selfdrive.car.cruise import CRUISE_LONG_PRESS, IMPERIAL_INCREMENT, V_CRUISE_INITIAL, VCruiseHelper
 from openpilot.selfdrive.car.tests.test_cruise_speed import TestVCruiseHelper
+from openpilot.sunnypilot.selfdrive.car.cruise_ext import CRUISE_BUTTON_TIMER, \
+  LONG_PRESS_MULTIPLIER, LONG_PRESS_MULTIPLIER_ICBM
 
 ButtonEvent = car.CarState.ButtonEvent
 ButtonType = car.CarState.ButtonEvent.Type
@@ -148,3 +150,91 @@ class TestCustomAccIncrements(TestVCruiseHelper):
     initial_speed = self.v_cruise_helper.v_cruise_kph
     self.press_button_long(ButtonType.accelCruise)
     assert self.v_cruise_helper.v_cruise_kph == initial_speed + 10  # Should fallback to 10
+
+
+class TestIcbmLongPressIncrement:
+  """ICBM platforms have no set speed of their own: the driver's button goes to the
+  car's cluster, which jumps straight to the next multiple of 10. Ours has to agree,
+  or ICBM spends every long press tapping SET- to drag the cluster back down."""
+
+  def setup_method(self):
+    # CRUISE_BUTTON_TIMER is module level state shared with the ICBM controller
+    for k in CRUISE_BUTTON_TIMER:
+      CRUISE_BUTTON_TIMER[k] = 0
+
+    self.CP = car.CarParams(pcmCruise=True)
+    self.CP_SP = custom.CarParamsSP(pcmCruiseSpeed=False)
+    self.v_cruise_helper = VCruiseHelper(self.CP, self.CP_SP)
+
+    self.params = Params()
+    self.set_custom_increments(False, 1, 5)
+
+  def set_custom_increments(self, enabled: bool, short_inc: int, long_inc: int) -> None:
+    self.params.put_bool("CustomAccIncrementsEnabled", enabled, block=True)
+    self.params.put("CustomAccShortPressIncrement", short_inc, block=True)
+    self.params.put("CustomAccLongPressIncrement", long_inc, block=True)
+    self.v_cruise_helper.read_custom_set_speed_params()
+
+  def make_cs(self, v_cruise_kph: float) -> car.CarState:
+    speed = v_cruise_kph * CV.KPH_TO_MS
+    return car.CarState(cruiseState={"available": True, "enabled": True,
+                                     "speed": speed, "speedCluster": speed})
+
+  def engage(self, v_cruise_kph: float) -> None:
+    # update_enabled_state holds the first frame back, and until it settles
+    # v_cruise_kph is seeded straight from cruiseState.speed
+    CS = self.make_cs(v_cruise_kph)
+    for _ in range(3):
+      self.v_cruise_helper.update_v_cruise(CS, enabled=True, is_metric=True)
+    assert self.v_cruise_helper.v_cruise_kph == pytest.approx(v_cruise_kph)
+
+  def press(self, button_type, long_press: bool, v_cruise_kph: float) -> None:
+    CS = self.make_cs(v_cruise_kph)
+    CS.buttonEvents = [ButtonEvent(type=button_type, pressed=True)]
+    self.v_cruise_helper.update_v_cruise(CS, enabled=True, is_metric=True)
+
+    CS.buttonEvents = []
+    for _ in range(CRUISE_LONG_PRESS if long_press else 1):
+      self.v_cruise_helper.update_v_cruise(CS, enabled=True, is_metric=True)
+
+    CS.buttonEvents = [ButtonEvent(type=button_type, pressed=False)]
+    self.v_cruise_helper.update_v_cruise(CS, enabled=True, is_metric=True)
+
+  @pytest.mark.parametrize("initial,expected", [(122, 130), (120, 130), (129, 130)])
+  def test_long_press_accel_walks_the_decade_grid(self, initial, expected):
+    self.engage(initial)
+    self.press(ButtonType.accelCruise, True, initial)
+    assert self.v_cruise_helper.v_cruise_kph == expected
+
+  @pytest.mark.parametrize("initial,expected", [(122, 120), (130, 120), (121, 120)])
+  def test_long_press_decel_walks_the_decade_grid(self, initial, expected):
+    self.engage(initial)
+    self.press(ButtonType.decelCruise, True, initial)
+    assert self.v_cruise_helper.v_cruise_kph == expected
+
+  def test_short_press_is_untouched(self):
+    self.engage(122)
+    self.press(ButtonType.accelCruise, False, 122)
+    assert self.v_cruise_helper.v_cruise_kph == 123
+
+  def test_the_users_own_increment_still_wins(self):
+    self.set_custom_increments(True, 1, 5)
+    self.engage(122)
+    self.press(ButtonType.accelCruise, True, 122)
+    assert self.v_cruise_helper.v_cruise_kph == 125
+
+  def test_imperial_keeps_the_five_mph_step(self):
+    helper = VCruiseHelper(self.CP, self.CP_SP)
+    helper.get_minimum_set_speed(False)
+    assert helper.update_v_cruise_delta(True, IMPERIAL_INCREMENT)[1] == \
+           pytest.approx(LONG_PRESS_MULTIPLIER * IMPERIAL_INCREMENT)
+
+  def test_openpilot_long_platforms_keep_the_five_step(self):
+    helper = VCruiseHelper(car.CarParams(pcmCruise=False), custom.CarParamsSP(pcmCruiseSpeed=True))
+    helper.get_minimum_set_speed(True)
+    assert helper.update_v_cruise_delta(True, 1.)[1] == LONG_PRESS_MULTIPLIER
+
+  def test_icbm_metric_long_press_uses_the_decade_step(self):
+    self.v_cruise_helper.get_minimum_set_speed(True)
+    assert self.v_cruise_helper.update_v_cruise_delta(True, 1.)[1] == LONG_PRESS_MULTIPLIER_ICBM
+    assert self.v_cruise_helper.update_v_cruise_delta(False, 1.)[1] == 1

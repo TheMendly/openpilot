@@ -25,6 +25,15 @@ V_CRUISE_MIN = 8
 V_CRUISE_MAX = 145
 V_CRUISE_UNSET = 255
 
+# Long press step, applied on top of the 1 km/h (or 1 mph) short press increment.
+LONG_PRESS_MULTIPLIER = 5
+# Where openpilot only emulates the stock cruise through ICBM, the cluster is still
+# the one that reacts to the driver's own button: a Hyundai cluster jumps straight to
+# the next multiple of 10 on a long press. Stepping by 5 here would leave our set
+# speed a notch below the cluster's, and ICBM would then tap SET- to drag the cluster
+# back down - the two fighting over every long press. Match the car instead.
+LONG_PRESS_MULTIPLIER_ICBM = 10
+
 
 def update_manual_button_timers(CS: car.CarState, button_timers: dict[car.CarState.ButtonEvent.Type, int]) -> None:
   # increment timer for buttons still pressed
@@ -46,6 +55,7 @@ class VCruiseHelperSP:
     self.v_cruise_cluster_kph = V_CRUISE_UNSET
     self.params = Params()
     self.v_cruise_min = 0
+    self.is_metric = True
     self.enabled_prev = False
 
     self.custom_acc_enabled = self.params.get_bool("CustomAccIncrementsEnabled")
@@ -71,7 +81,13 @@ class VCruiseHelperSP:
 
   def update_v_cruise_delta(self, long_press: bool, v_cruise_delta: float) -> tuple[bool, float]:
     if not self.custom_acc_enabled:
-      v_cruise_delta = v_cruise_delta * (5 if long_press else 1)
+      multiplier = LONG_PRESS_MULTIPLIER
+      # Only where ICBM drives the stock cruise, and only in metric: the base delta is
+      # 1 mph imperial, so x10 would be a 10 mph step where US clusters do 5.
+      if not self.CP_SP.pcmCruiseSpeed and self.is_metric:
+        multiplier = LONG_PRESS_MULTIPLIER_ICBM
+
+      v_cruise_delta = v_cruise_delta * (multiplier if long_press else 1)
       return long_press, v_cruise_delta
 
     # Apply user-specified multipliers to the base increment
@@ -85,6 +101,10 @@ class VCruiseHelperSP:
     return round_to_nearest, v_cruise_delta
 
   def get_minimum_set_speed(self, is_metric: bool) -> None:
+    # update_v_cruise() calls this before _update_v_cruise_non_pcm(), which is the only
+    # caller of update_v_cruise_delta(), so stashing the unit here is always fresh.
+    self.is_metric = is_metric
+
     if self.CP_SP.pcmCruiseSpeed:
       self.v_cruise_min = V_CRUISE_MIN
       return
